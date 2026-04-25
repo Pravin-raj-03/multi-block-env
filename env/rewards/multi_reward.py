@@ -444,24 +444,30 @@ class MultiRewardCalculator:
             c.format_compliance = 0.0
             return c
 
-        # execution_success: "Final Answer:" present
-        has_final = bool(re.search(r'Final Answer\s*:', action, re.IGNORECASE))
+        # execution_success: "Final Answer:" or "<answer>" present
+        final_match = re.search(r'(?:Final Answer|Answer)\s*:\s*(.+)|<answer>(.*?)</answer>', action, re.IGNORECASE | re.DOTALL)
+        has_final = bool(final_match)
         c.execution_success = 1.0 if has_final else 0.0
 
-        # format_compliance: numbered steps
-        numbered = re.findall(r'Step\s+\d+\s*:', action, re.IGNORECASE)
+        # format_compliance: numbered steps or <think> tags
+        numbered = re.findall(r'Step\s+\d+\s*:|<think>', action, re.IGNORECASE)
         min_steps = task_meta.get("min_steps", 2)
         c.format_compliance = min(1.0, len(numbered) / min_steps)
 
-        if not has_final:
-            return c
-
         # correctness
         answer_str = task_meta.get("answer", "")
-        final_match = re.search(r'Final Answer\s*:\s*(.+)', action, re.IGNORECASE)
         if final_match:
-            agent_ans = final_match.group(1).strip()
-            c.correctness = self._score_answer(agent_ans, str(answer_str))
+            agent_ans = (final_match.group(1) or final_match.group(2)).strip()
+        else:
+            # Generalize: if no tag is found, fallback to the last number in the text
+            nums = re.findall(r'-?\d+\.?\d*', action)
+            agent_ans = nums[-1] if nums else ""
+            
+        c.correctness = self._score_answer(agent_ans, str(answer_str))
+        
+        # Reward finding the truth even without perfect formatting
+        if c.correctness > 0 and not has_final:
+            c.execution_success = 0.5
 
         # Anti-hack: verbatim copy
         task_desc = task_meta.get("task_description", "")
@@ -509,10 +515,11 @@ class MultiRewardCalculator:
 
     @staticmethod
     def _is_verbatim_reasoning_copy(action: str, task_desc: str, step_count: int, min_steps: int) -> bool:
-        final_match = re.search(r'Final Answer\s*:\s*(.+)', action, re.IGNORECASE)
-        if not final_match:
-            return False
-        final_ans = final_match.group(1).strip()
+        final_match = re.search(r'(?:Final Answer|Answer)\s*:\s*(.+)|<answer>(.*?)</answer>', action, re.IGNORECASE | re.DOTALL)
+        if final_match:
+            final_ans = (final_match.group(1) or final_match.group(2)).strip()
+        else:
+            final_ans = action
         task_nums = set(re.findall(r'\d+\.?\d*', task_desc))
         ans_nums = set(re.findall(r'\d+\.?\d*', final_ans))
         if ans_nums and ans_nums.issubset(task_nums) and step_count < min_steps:
