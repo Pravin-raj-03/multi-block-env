@@ -330,11 +330,24 @@ class LongHorizonEnv(Env):
         # --- Multi-Agent Orchestration: Intercept Task Split ---
         if episode.done and episode.block_name == "task_split" and episode.metadata.get("run_subtasks", True):
             from env.blocks.task_split import TaskSplittingBlock
+            import re
             tasks = TaskSplittingBlock._parse_tasks(action_text)
             for t in tasks:
-                if "[CODE]" in t.upper() or "FUNCTION" in t.upper():
-                    episode.task_queue.append({"type": "code_gen", "desc": t})
+                # Dynamically check if the planner requested a specific block via [BLOCK_NAME]
+                tag_match = re.match(r'^\[([A-Z0-9_]+)\]', t.upper().strip())
+                if tag_match:
+                    target_block = tag_match.group(1).lower()
+                    desc = t[tag_match.end():].strip()
                 else:
+                    # Fallback block if the planner didn't specify
+                    target_block = "reasoning"
+                    desc = t
+                
+                # Verify the requested block actually exists in the environment
+                if target_block in self._blocks:
+                    episode.task_queue.append({"type": target_block, "desc": desc})
+                else:
+                    # If it hallucinated a block, fallback to reasoning
                     episode.task_queue.append({"type": "reasoning", "desc": t})
                     
             if episode.task_queue:
