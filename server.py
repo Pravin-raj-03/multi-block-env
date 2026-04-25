@@ -17,6 +17,10 @@ from env.blocks.reasoning import ReasoningBlock
 from env.blocks.task_split import TaskSplittingBlock
 from env.long_horizon import EnvConfig, LongHorizonEnv
 
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Multi-Block Environment Server is running."}
+
 # ---------------------------------------------------------------------------
 # Global env instance
 # ---------------------------------------------------------------------------
