@@ -17,9 +17,7 @@ from env.blocks.reasoning import ReasoningBlock
 from env.blocks.task_split import TaskSplittingBlock
 from env.long_horizon import EnvConfig, LongHorizonEnv
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Multi-Block Environment Server is running."}
+
 
 # ---------------------------------------------------------------------------
 # Global env instance
@@ -105,6 +103,10 @@ def _obs_dict(obs) -> dict:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Multi-Block Environment Server is running."}
 
 @app.post("/episodes/reset", response_model=ResetResponse)
 async def reset_episode(body: ResetRequest):
