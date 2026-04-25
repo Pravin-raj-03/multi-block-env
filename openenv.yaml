@@ -1,0 +1,19 @@
+name: multi-block-env
+version: 0.1.0
+description: Long-horizon multi-block RL environment for training Ollama/Llama models.
+entrypoint: server:app
+framework: openenv
+tags: [openenv, reinforcement-learning, multi-step, reasoning, coding]
+tasks:
+  - id: task_split
+    name: Task Splitting
+    difficulty: medium
+    description: Decompose complex engineering problems into logical, ordered, and atomic subtasks.
+  - id: code_gen
+    name: Code Generation
+    difficulty: hard
+    description: Generate strictly formatted Python code to solve algorithmic problems based on hidden test cases.
+  - id: reasoning
+    name: Chain of Thought Reasoning
+    difficulty: hard
+    description: Perform explicit step-by-step reasoning chains culminating in a structured final answer.

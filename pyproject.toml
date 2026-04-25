@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-block-env"
+version = "0.1.0"
+description = "Long-horizon multi-block RL environment for training Ollama/Llama"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.27.0",
+    "openenv>=0.1.13",
+]
+
+[project.optional-dependencies]
+train = [
+    "transformers>=4.41",
+    "peft>=0.11",
+    "trl>=0.9",
+    "bitsandbytes>=0.43",
+    "accelerate>=0.30",
+    "datasets>=4.1",
+    "torch>=2.0",
+    "pydantic-settings>=2.0",
+]
+dev = [
+    "pytest>=9.0",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[project.scripts]
+mb-server = "server:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["env*", "trainer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
