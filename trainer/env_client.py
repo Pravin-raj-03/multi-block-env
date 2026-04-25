@@ -64,12 +64,16 @@ class EnvClient:
 
     # -- OpenEnv interface ---------------------------------------------------
 
-    def reset(self, block_name: str | None = None, custom_task_description: str | None = None) -> tuple[str, dict]:
+    def reset(self, block_name: str | None = None, custom_task_description: str | None = None, custom_answer: str | None = None) -> tuple[str, dict]:
         """
         Returns (episode_id, observation_dict).
         Mirrors LongHorizonEnv.reset().
         """
-        payload = {"block_name": block_name, "custom_task_description": custom_task_description}
+        payload = {
+            "block_name": block_name, 
+            "custom_task_description": custom_task_description,
+            "custom_answer": custom_answer
+        }
         r = self._http.post("/episodes/reset", json=payload)
         r.raise_for_status()
         data = r.json()

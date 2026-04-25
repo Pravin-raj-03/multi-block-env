@@ -257,7 +257,7 @@ class LongHorizonEnv(Env):
 
     # -- Standard OpenEnv interface ------------------------------------------
 
-    def reset(self, block_name: str | None = None, custom_task_description: str | None = None) -> tuple[str, Observation]:
+    def reset(self, block_name: str | None = None, custom_task_description: str | None = None, custom_answer: str | None = None) -> tuple[str, Observation]:
         """
         Start a fresh episode.
 
@@ -273,6 +273,10 @@ class LongHorizonEnv(Env):
         if custom_task_description:
             task_description = custom_task_description
             metadata["task_description"] = custom_task_description
+        
+        # Override with custom expected answer if provided
+        if custom_answer:
+            metadata["answer"] = custom_answer
             
         episode_id = str(uuid.uuid4())
 
