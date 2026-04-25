@@ -162,6 +162,7 @@ class EpisodeState:
     difficulty: Difficulty = Difficulty.EASY
     active_agent: str = "any"
     roster: list = field(default_factory=lambda: ["agent_0"])
+    task_queue: list[dict] = field(default_factory=list)  # queued subtasks for multi-agent routing
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +326,42 @@ class LongHorizonEnv(Env):
         episode.step += 1
         episode.total_reward += reward
         episode.done = done or episode.block.is_done(episode.metadata)
+        
+        # --- Multi-Agent Orchestration: Intercept Task Split ---
+        if episode.done and episode.block_name == "task_split" and episode.metadata.get("run_subtasks", True):
+            from env.blocks.task_split import TaskSplittingBlock
+            tasks = TaskSplittingBlock._parse_tasks(action_text)
+            for t in tasks:
+                if "[CODE]" in t.upper() or "FUNCTION" in t.upper():
+                    episode.task_queue.append({"type": "code_gen", "desc": t})
+                else:
+                    episode.task_queue.append({"type": "reasoning", "desc": t})
+                    
+            if episode.task_queue:
+                episode.done = False  # Continue the episode into the subtasks
+        
+        # --- Multi-Agent Orchestration: Shift to Next Subtask ---
+        if episode.done and episode.task_queue:
+            episode.done = False
+            next_task = episode.task_queue.pop(0)
+            target_block = next_task["type"]
+            
+            if target_block in self._blocks:
+                episode.block = self._blocks[target_block]
+                episode.block_name = target_block
+                
+                # Re-initialize metadata for the new block but keep the subtask description
+                prompt, new_meta = episode.block.reset(episode.difficulty, self._rng)
+                new_meta["task_description"] = f"SUBTASK: {next_task['desc']}"
+                episode.metadata = new_meta
+                
+                # Push the subtask prompt to the buffer
+                episode.state_buffer.push({
+                    "step": episode.step,
+                    "role": "env",
+                    "content": f"New Subtask Assigned ({target_block}):\n{new_meta['task_description']}\n\n{prompt}",
+                    "timestamp": time.time(),
+                })
         episode.last_active = time.time()
 
         # Safety truncation
