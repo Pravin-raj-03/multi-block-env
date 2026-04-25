@@ -57,6 +57,7 @@ app.add_middleware(
 
 class ResetRequest(BaseModel):
     block_name: str | None = None
+    custom_task_description: str | None = None
 
 
 class ResetResponse(BaseModel):
@@ -112,7 +113,11 @@ async def root():
 async def reset_episode(body: ResetRequest):
     env = _require_env()
     try:
-        episode_id, obs = await run_in_threadpool(env.reset, body.block_name)
+        episode_id, obs = await run_in_threadpool(
+            env.reset, 
+            block_name=body.block_name, 
+            custom_task_description=body.custom_task_description
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return ResetResponse(
