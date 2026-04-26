@@ -154,18 +154,9 @@ class ReasoningBlock(EnvBlock):
     max_steps = 3
 
     def __init__(self):
-        super().__init__()
-        self.state_space = (
-            "Word problem or logical reasoning question requiring a step-by-step solution."
-        )
-        self.action_space = (
-            "Numbered reasoning chain: 'Step N: <reasoning>\\n...\\nFinal Answer: <answer>'. "
-            "Must end with a 'Final Answer:' line."
-        )
-        self.episode_max_length = self.max_steps
-        self._calc = MultiRewardCalculator()
+        pass
 
-    def reset(self, difficulty: Difficulty, rng: random.Random) -> tuple[str, dict]:
+    def reset(self, difficulty: str, rng: random.Random) -> tuple[str, dict]:
         pool = _BY_DIFFICULTY.get(difficulty) or _BY_DIFFICULTY[Difficulty.EASY]
         task = rng.choice(pool)
 
@@ -188,20 +179,16 @@ class ReasoningBlock(EnvBlock):
         )
         return prompt, metadata
 
-    def step(self, action_text: str, metadata: dict) -> tuple[dict, bool]:
+    def step(self, action_text: str, state: State) -> tuple[dict, bool]:
+        metadata = state.working_memory
         metadata["attempt_count"] += 1
         metadata["action_history"].append(action_text)
 
-        components = self._calc.compute_reasoning(
-            action=action_text,
-            task_meta=metadata,
-            action_history=metadata["action_history"],
-            step_count=metadata["attempt_count"],
-        )
-        comp_dict = components.to_dict()
-
-        solved = components.correctness >= 1.0
-        metadata["solved"] = solved
+        # Reward is now calculated by CorrectnessRubric in rubrics.py
+        comp_dict = {"step": metadata["attempt_count"]}
+        
+        # Simple completion check
+        solved = "final answer" in action_text.lower()
         done = solved or metadata["attempt_count"] >= self.max_steps
 
         return comp_dict, done

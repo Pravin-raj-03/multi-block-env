@@ -231,19 +231,9 @@ class CodeGenBlock(EnvBlock):
     max_steps = 5
 
     def __init__(self):
-        super().__init__()
-        self.state_space = (
-            "Python function specification with description, function signature, "
-            "and expected behaviour. Feedback from previous attempts shown in history."
-        )
-        self.action_space = (
-            "Python source code inside ```python ... ``` fences. "
-            "Must define the requested function. No imports allowed."
-        )
-        self.episode_max_length = self.max_steps
-        self._calc = MultiRewardCalculator()
+        pass
 
-    def reset(self, difficulty: Difficulty, rng: random.Random) -> tuple[str, dict]:
+    def reset(self, difficulty: str, rng: random.Random) -> tuple[str, dict]:
         pool = _BY_DIFFICULTY.get(difficulty) or _BY_DIFFICULTY[Difficulty.EASY]
         task = rng.choice(pool)
 
@@ -266,21 +256,17 @@ class CodeGenBlock(EnvBlock):
         )
         return prompt, metadata
 
-    def step(self, action_text: str, metadata: dict) -> tuple[dict, bool]:
+    def step(self, action_text: str, state: State) -> tuple[dict, bool]:
+        metadata = state.working_memory
         metadata["attempt_count"] += 1
         metadata["action_history"].append(action_text)
 
-        components = self._calc.compute_code_gen(
-            action=action_text,
-            task_meta=metadata,
-            action_history=metadata["action_history"],
-            attempt_count=metadata["attempt_count"],
-            min_steps=metadata["min_steps"],
-        )
-        comp_dict = components.to_dict()
-
-        solved = components.correctness >= 1.0
-        metadata["solved"] = solved
+        # Reward is now calculated by CodeExecutionRubric in rubrics.py
+        # But we return an empty dict or some basic feedback here
+        comp_dict = {"step": metadata["attempt_count"]}
+        
+        # Simple completion check for block routing
+        solved = "solved" in action_text.lower() # Placeholder, rubric handles real scoring
         done = solved or metadata["attempt_count"] >= self.max_steps
 
         return comp_dict, done

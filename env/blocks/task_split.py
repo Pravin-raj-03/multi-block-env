@@ -197,25 +197,15 @@ class TaskSplittingBlock(EnvBlock):
     max_steps = 2  # step 1: initial split; step 2: optional revision
 
     def __init__(self):
-        super().__init__()
-        # Override with block-specific space descriptors
-        self.state_space = (
-            "Problem description string requiring decomposition into subtasks."
-        )
-        self.action_space = (
-            "Numbered list: 'Task N: <concrete action>' — one atomic step per line. "
-            "At HARD difficulty prefix code subtasks with [CODE]."
-        )
-        self.episode_max_length = self.max_steps
         self._scorer = SplitQualityScorer()
 
     # -- reset ----------------------------------------------------------------
 
-    def reset(self, difficulty: Difficulty, rng: random.Random) -> tuple[str, dict]:
+    def reset(self, difficulty: str, rng: random.Random) -> tuple[str, dict]:
         pool = _BY_DIFFICULTY.get(difficulty) or _BY_DIFFICULTY[Difficulty.EASY]
         problem = rng.choice(pool)
 
-        run_subtasks = difficulty == Difficulty.HARD
+        run_subtasks = difficulty == "hard"
 
         metadata = {
             "task_id": problem.task_id,
@@ -252,7 +242,8 @@ class TaskSplittingBlock(EnvBlock):
 
     # -- step -----------------------------------------------------------------
 
-    def step(self, action_text: str, metadata: dict) -> tuple[dict, bool]:
+    def step(self, action_text: str, state: State) -> tuple[dict, bool]:
+        metadata = state.working_memory
         metadata["attempt_count"] += 1
         step_num = metadata["attempt_count"]
 
