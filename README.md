@@ -1,12 +1,4 @@
----
-title: Multi Block Env
-emoji: 🚀
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
+
 
 <p align="center"><img src="./EVANGELION-4-26-2026.png" alt="Team Evangelion Art" style="max-width: 100%; border-radius: 8px; margin-bottom: 20px;"></p>
 
