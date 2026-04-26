@@ -179,16 +179,28 @@ class ReasoningBlock(EnvBlock):
         )
         return prompt, metadata
 
-    def step(self, action_text: str, state: State) -> tuple[dict, bool]:
+    def step(self, action_text: str, state) -> tuple[dict, bool]:
         metadata = state.working_memory
         metadata["attempt_count"] += 1
         metadata["action_history"].append(action_text)
 
-        # Reward is now calculated by CorrectnessRubric in rubrics.py
         comp_dict = {"step": metadata["attempt_count"]}
-        
-        # Simple completion check
-        solved = "final answer" in action_text.lower()
+
+        # Only mark solved if "Final Answer" is present AND matches expected answer
+        has_final = "final answer" in action_text.lower()
+        if has_final:
+            import re
+            match = re.search(r'Final\s+Answer\s*:\s*([^\n]+)', action_text, re.IGNORECASE)
+            if match:
+                agent_ans = re.sub(r'[^\w\s]', '', match.group(1)).strip().lower()
+                expected = re.sub(r'[^\w\s]', '', str(metadata.get("answer", ""))).strip().lower()
+                solved = agent_ans == expected
+            else:
+                solved = False
+        else:
+            solved = False
+
+        metadata["solved"] = solved
         done = solved or metadata["attempt_count"] >= self.max_steps
 
         return comp_dict, done

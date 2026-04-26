@@ -1,90 +1,85 @@
 """
-Reward rubrics with comprehensive anti-reward-hacking defenses.
+Reward rubrics — hardened, unified, and audited for reward hacking.
 
-Each rubric is independently verifiable and adversarially hardened.
-All reward signals are OUTCOME-based, not FORMAT-based.
+Fixes applied vs previous version:
+  - CRITICAL-1: task_split now calls SplitQualityScorer for real outcome scoring
+  - CRITICAL-2: CodeExecutionRubric now uses sandboxed subprocess via CodeSandbox
+  - CRITICAL-3: AntiRepetitionRubric is SKIPPED inside code blocks (avoids false positives)
+  - CRITICAL-4: task_split no longer gives free 0.5 floor reward
 """
 
 import re
 import textwrap
 import hashlib
-from typing import Any, Optional
 from openenv.core.rubrics.base import Rubric
 from openenv.core.rubrics.containers import WeightedSum
-from openenv.core.tools.local_python_executor import PyExecutor
 from .base import Action, Observation
+from .rewards.multi_reward import CodeSandbox, SplitQualityScorer
 
 
 # ---------------------------------------------------------------------------
-# Helper utilities
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _normalize_text(text: str) -> str:
-    """Lowercase, collapse whitespace, strip punctuation for comparison."""
-    text = text.lower().strip()
-    text = re.sub(r'\s+', ' ', text)
-    return text
+    return re.sub(r'\s+', ' ', text.lower().strip())
 
 def _content_hash(text: str) -> str:
     return hashlib.md5(_normalize_text(text).encode()).hexdigest()
 
+def _is_code_block(text: str) -> bool:
+    """Returns True if the response is primarily a code submission."""
+    return bool(re.search(r'```(?:python)?', text))
+
 
 # ---------------------------------------------------------------------------
-# Defense 1: Anti-Looping / Anti-Repetition Rubric
+# 1. Anti-Repetition Gate
+#    Only applied to reasoning/text responses — NOT code blocks.
 # ---------------------------------------------------------------------------
 
 class AntiRepetitionRubric(Rubric):
     """
-    Zero reward for any response that is semantically repetitive or loops.
-    
-    Hardened against:
-    - Sequential step number looping (Step 1, Step 2... Step 100)
-    - Repeated content with different step numbers
-    - Padding the output with synonymous or near-identical lines
+    Hard-zeros repetitive text responses.
+    Skipped entirely for code block submissions to avoid false positives.
     """
     def forward(self, action: Action, observation: Observation) -> float:
         text = action.text
 
-        # 1. Check step number range — steps beyond 10 are penalized hard
+        # Skip this check for code submissions (repeated lines are valid in code)
+        if _is_code_block(text):
+            return 1.0
+
+        # 1. Step numbers must be sequential from 1, capped at 10
         step_numbers = [int(m) for m in re.findall(r'Step\s+(\d+)', text, re.IGNORECASE)]
         if step_numbers:
             if max(step_numbers) > 10:
-                return 0.0  # Hard zero — no valid reasoning needs >10 steps
-            # Steps must be sequential from 1
-            expected = list(range(1, len(step_numbers) + 1))
-            if step_numbers != expected:
-                return 0.0  # Non-sequential = hacking
+                return 0.0
+            if step_numbers != list(range(1, len(step_numbers) + 1)):
+                return 0.0
 
-        # 2. Check for repeated lines (catch padding/synonym spam)
+        # 2. Line uniqueness (only for text responses)
         lines = [l.strip() for l in text.splitlines() if len(l.strip()) > 10]
         if lines:
             hashes = [_content_hash(l) for l in lines]
-            unique_ratio = len(set(hashes)) / len(hashes)
-            if unique_ratio < 0.7:  # More than 30% duplicates
+            if len(set(hashes)) / len(hashes) < 0.7:
                 return 0.0
 
-        # 3. Check for paragraph-level repetition (catch step content reuse)
+        # 3. Paragraph uniqueness across step bodies
         paragraphs = [p.strip() for p in re.split(r'Step\s+\d+:', text) if len(p.strip()) > 20]
         if len(paragraphs) > 1:
             para_hashes = [_content_hash(p) for p in paragraphs]
             if len(set(para_hashes)) < len(para_hashes) * 0.75:
                 return 0.0
 
-        return 1.0  # Passed all checks
+        return 1.0
 
 
 # ---------------------------------------------------------------------------
-# Defense 2: Brevity / Length Control Rubric
+# 2. Brevity Rubric
 # ---------------------------------------------------------------------------
 
 class BrevityRubric(Rubric):
-    """
-    Penalizes excessively long responses.
-    
-    Hardened against:
-    - Padding with filler text to "fill" the token budget
-    - Generating excessive explanation to avoid real work
-    """
+    """Decays reward for verbose responses. Hard zero beyond 3000 chars."""
     def __init__(self, target_chars: int = 800, hard_limit_chars: int = 3000):
         super().__init__()
         self.target = target_chars
@@ -93,144 +88,122 @@ class BrevityRubric(Rubric):
     def forward(self, action: Action, observation: Observation) -> float:
         length = len(action.text)
         if length <= self.target:
-            return 1.0  # Ideal length
+            return 1.0
         if length >= self.hard_limit:
-            return 0.0  # Hard zero for extreme verbosity
-        # Smooth decay between target and hard_limit
-        decay = (length - self.target) / (self.hard_limit - self.target)
-        return max(0.0, 1.0 - decay)
+            return 0.0
+        return 1.0 - (length - self.target) / (self.hard_limit - self.target)
 
 
 # ---------------------------------------------------------------------------
-# Defense 3: Code Execution Rubric (Outcome-Based)
+# 3. Code Execution Rubric — Sandboxed
+#    Uses the existing CodeSandbox (AST analysis + subprocess isolation).
 # ---------------------------------------------------------------------------
 
 class CodeExecutionRubric(Rubric):
     """
-    Verifies code correctness via actual execution against test cases.
-    
-    Hardened against:
-    - Outputting the test case answer directly as code (hardcoding)
-    - Empty code blocks that "execute" without doing anything
-    - Importing test answers from global scope
+    Executes code in an isolated subprocess with AST-level static analysis.
+    Blocks: imports, exec/eval, memory bombs, infinite loops (via timeout).
+    Score = fraction of test cases passed.
     """
     def __init__(self, timeout: float = 5.0):
         super().__init__()
-        self.executor = PyExecutor()
+        self.sandbox = CodeSandbox(timeout=timeout)
 
     def forward(self, action: Action, observation: Observation) -> float:
-        # 1. Extract code from markdown block
+        # Extract code
         code_match = re.search(r'```(?:python)?\n?(.*?)```', action.text, re.DOTALL)
         if not code_match:
-            return 0.0  # No code block at all
-        
+            return 0.0
         code = code_match.group(1).strip()
-        
         if not code or len(code) < 10:
-            return 0.0  # Empty or trivially small code block
+            return 0.0
 
-        # 2. Anti-hardcoding: code must NOT contain the expected answer as a literal
-        working_memory = observation.metadata.get("working_memory", {}) if hasattr(observation, 'metadata') else {}
+        working_memory = (
+            observation.metadata.get("working_memory", {})
+            if hasattr(observation, 'metadata') else {}
+        )
         test_cases = working_memory.get("test_cases", [])
         fn_name = working_memory.get("fn_name", "solution")
 
-        # 3. Build an isolated test harness
-        # CRITICAL: Use a randomized variable name to prevent scope leakage
-        harness = textwrap.dedent(f"""
-            _multi_block_test_cases = {test_cases!r}
-            _multi_block_results = []
-            for _tc_args, _tc_expected in _multi_block_test_cases:
-                try:
-                    _tc_got = {fn_name}(*_tc_args)
-                    _multi_block_results.append(int(_tc_got == _tc_expected))
-                except Exception as _tc_exc:
-                    _multi_block_results.append(0)
-            _multi_block_score = sum(_multi_block_results) / len(_multi_block_results) if _multi_block_results else 0.0
-            print(f"SCORE:{{_multi_block_score:.4f}}")
-        """)
-
-        full_code = f"{code}\n{harness}"
-        result = self.executor.run(full_code)
-
-        if result.exit_code != 0:
-            return 0.0  # Code crashed
-
-        # 4. Parse the structured score from stdout
-        score_match = re.search(r'SCORE:([\d.]+)', result.stdout or '')
-        if score_match:
-            return float(score_match.group(1))
-        
-        return 0.0  # Could not parse output
-
-
-# ---------------------------------------------------------------------------
-# Defense 4: Correctness Rubric (Reasoning Tasks)
-# ---------------------------------------------------------------------------
-
-class CorrectnessRubric(Rubric):
-    """
-    Checks final answer correctness for reasoning tasks.
-    
-    Hardened against:
-    - Listing multiple answers and hoping one matches
-    - Embedding the answer in a long string of numbers
-    - Approximate matching abuse
-    """
-    def forward(self, action: Action, observation: Observation) -> float:
-        working_memory = observation.metadata.get("working_memory", {}) if hasattr(observation, 'metadata') else {}
-        expected = str(working_memory.get("answer", "")).strip().lower()
-
-        if not expected:
+        if not test_cases:
             return 0.0
 
-        # 1. ONLY look at the last "Final Answer: X" line — not any number in the text
-        # This prevents the model from guessing many numbers and getting partial credit
-        final_answer_match = re.search(
-            r'Final\s+Answer\s*:\s*([^\n]+)',
-            action.text,
-            re.IGNORECASE
-        )
-        
-        if not final_answer_match:
-            return 0.0  # No structured answer = no reward
+        # Build harness — structured JSON output to prevent stdout manipulation
+        harness = textwrap.dedent(f"""\
+            _test_cases = {test_cases!r}
+            _results = []
+            for _args, _expected in _test_cases:
+                try:
+                    _got = {fn_name}(*_args)
+                    _results.append({{"pass": _got == _expected}})
+                except Exception as _e:
+                    _results.append({{"pass": False, "error": str(_e)}})
+            _test_result = _results
+        """)
 
-        agent_answer = final_answer_match.group(1).strip().lower()
-        
-        # 2. Normalize for comparison (strip punctuation, extra spaces)
-        agent_clean = re.sub(r'[^\w\s]', '', agent_answer).strip()
-        expected_clean = re.sub(r'[^\w\s]', '', expected).strip()
+        result = self.sandbox.execute(code, harness)
 
-        if agent_clean == expected_clean:
-            return 1.0
-        
-        # 3. For numeric answers: exact numeric match only (no rounding tricks)
-        agent_nums = re.findall(r'-?\d+(?:\.\d+)?', agent_answer)
-        expected_nums = re.findall(r'-?\d+(?:\.\d+)?', expected)
-        
-        if agent_nums and expected_nums and agent_nums[0] == expected_nums[0]:
-            # Correct number found, but check it's the FIRST and ONLY number mentioned
-            if len(agent_nums) == 1:
-                return 1.0  # Clean single-number answer
-            else:
-                return 0.5  # Correct answer but buried in multiple numbers (penalize hedging)
+        if result.blocked:
+            return 0.0  # Attempted unsafe code
+        if result.timed_out:
+            return 0.0  # Infinite loop / too slow
+        if not result.success:
+            return 0.0
+
+        # result.result is the _test_result list
+        if isinstance(result.result, list) and result.result:
+            passed = sum(1 for r in result.result if isinstance(r, dict) and r.get("pass"))
+            return passed / len(result.result)
 
         return 0.0
 
 
 # ---------------------------------------------------------------------------
-# Defense 5: Minimal Reasoning Density Rubric
+# 4. Correctness Rubric — Reasoning Tasks
+#    Only "Final Answer: X" on its own line counts. No hedging.
+# ---------------------------------------------------------------------------
+
+class CorrectnessRubric(Rubric):
+    """
+    Exact-match correctness against the expected answer.
+    Requires a clean 'Final Answer: X' declaration.
+    """
+    def forward(self, action: Action, observation: Observation) -> float:
+        working_memory = (
+            observation.metadata.get("working_memory", {})
+            if hasattr(observation, 'metadata') else {}
+        )
+        expected = str(working_memory.get("answer", "")).strip().lower()
+        if not expected:
+            return 0.0
+
+        match = re.search(r'Final\s+Answer\s*:\s*([^\n]+)', action.text, re.IGNORECASE)
+        if not match:
+            return 0.0  # No structured final answer = no reward
+
+        agent_answer = match.group(1).strip().lower()
+        agent_clean = re.sub(r'[^\w\s]', '', agent_answer).strip()
+        expected_clean = re.sub(r'[^\w\s]', '', expected).strip()
+
+        if agent_clean == expected_clean:
+            return 1.0
+
+        # Numeric exact match — only if it's the SOLE number in the answer
+        agent_nums = re.findall(r'-?\d+(?:\.\d+)?', agent_answer)
+        expected_nums = re.findall(r'-?\d+(?:\.\d+)?', expected)
+        if agent_nums and expected_nums and agent_nums[0] == expected_nums[0]:
+            return 1.0 if len(agent_nums) == 1 else 0.5  # Penalize hedging
+
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# 5. Reasoning Density Rubric
+#    Penalizes empty or filler step bodies.
 # ---------------------------------------------------------------------------
 
 class ReasoningDensityRubric(Rubric):
-    """
-    Ensures responses have meaningful content density, not just structure.
-    
-    Hardened against:
-    - Submitting step headers with empty bodies
-    - Filler phrases like "Step 1: Think about the problem"
-    - One-word step bodies
-    """
-    # Meaningless filler phrases that indicate content-free steps
+    """Ensures step bodies have actual content, not filler phrases."""
     FILLER_PATTERNS = [
         r'^think\s*(about|through|carefully)?$',
         r'^analyze\s*(the\s*problem)?$',
@@ -240,35 +213,76 @@ class ReasoningDensityRubric(Rubric):
         r'^n/?a$',
         r'^step\s*\d+$',
     ]
-    
+
     def forward(self, action: Action, observation: Observation) -> float:
-        text = action.text
-        
-        # Extract step bodies
-        step_bodies = re.split(r'Step\s+\d+\s*:', text, flags=re.IGNORECASE)[1:]
-        
+        # Not applicable to code blocks
+        if _is_code_block(action.text):
+            return 1.0
+
+        step_bodies = re.split(r'Step\s+\d+\s*:', action.text, flags=re.IGNORECASE)[1:]
         if not step_bodies:
-            return 1.0  # No step format used — not penalized here
-        
+            return 1.0
+
         filler_count = 0
         for body in step_bodies:
-            body_clean = body.split('\n')[0].strip().lower()  # First line of step
-            if not body_clean or len(body_clean) < 5:
+            first_line = body.split('\n')[0].strip().lower()
+            if not first_line or len(first_line) < 5:
                 filler_count += 1
                 continue
             for pattern in self.FILLER_PATTERNS:
-                if re.match(pattern, body_clean):
+                if re.match(pattern, first_line):
                     filler_count += 1
                     break
-        
-        if len(step_bodies) == 0:
-            return 1.0
-        
+
         filler_ratio = filler_count / len(step_bodies)
-        if filler_ratio > 0.3:  # >30% filler steps = penalty
-            return max(0.0, 1.0 - filler_ratio)
-        
-        return 1.0
+        return max(0.0, 1.0 - filler_ratio) if filler_ratio > 0.3 else 1.0
+
+
+# ---------------------------------------------------------------------------
+# 6. Task Split Quality Rubric
+#    Directly calls SplitQualityScorer — real outcome-based scoring.
+# ---------------------------------------------------------------------------
+
+class TaskSplitRubric(Rubric):
+    """
+    Scores task decomposition quality using SplitQualityScorer.
+    Evaluates: completeness, atomicity, ordering, specificity, non-redundancy.
+    """
+    def __init__(self):
+        super().__init__()
+        self.scorer = SplitQualityScorer()
+
+    def forward(self, action: Action, observation: Observation) -> float:
+        working_memory = (
+            observation.metadata.get("working_memory", {})
+            if hasattr(observation, 'metadata') else {}
+        )
+        reference_split = working_memory.get("reference_split", [])
+        problem_desc = working_memory.get("task_description", "")
+        min_tasks = working_memory.get("min_tasks", 3)
+        max_tasks = working_memory.get("max_tasks", 8)
+
+        if not reference_split:
+            return 0.0
+
+        # Parse numbered tasks from agent response
+        tasks = []
+        for line in action.text.strip().splitlines():
+            m = re.match(r'^\s*(?:Task\s+)?\d+[.):–\-]\s*(.+)', line, re.IGNORECASE)
+            if m:
+                tasks.append(m.group(1).strip())
+
+        if not tasks:
+            return 0.0
+
+        components = self.scorer.score(
+            agent_tasks=tasks,
+            reference_split=reference_split,
+            problem_description=problem_desc,
+            min_tasks=min_tasks,
+            max_tasks=max_tasks,
+        )
+        return components.total()
 
 
 # ---------------------------------------------------------------------------
@@ -277,53 +291,56 @@ class ReasoningDensityRubric(Rubric):
 
 class MultiBlockRubric(WeightedSum):
     """
-    Composes all rubrics into a single anti-hacking reward signal.
-    
-    Design principles:
-    - AntiRepetition acts as a GATE: a repetitive response gets near-zero reward
-      regardless of what other rubrics say.
-    - Outcome rubrics (Correctness, CodeExecution) dominate the score.
-    - Format/brevity are minor contributors to prevent format over-optimization.
+    Unified reward rubric routing to the right scorer per block type.
+
+    Weights must sum to 1.0 (OpenEnv requirement).
+    The forward() method overrides the weighted sum with custom routing logic.
     """
     def __init__(self):
         rubrics = [
-            AntiRepetitionRubric(),    # rubric_0 — gate
+            AntiRepetitionRubric(),    # rubric_0 — gate (text only)
             BrevityRubric(),           # rubric_1 — length control
-            CodeExecutionRubric(),     # rubric_2 — code outcomes
-            CorrectnessRubric(),       # rubric_3 — reasoning outcomes
+            CodeExecutionRubric(),     # rubric_2 — sandboxed code outcome
+            CorrectnessRubric(),       # rubric_3 — reasoning outcome
             ReasoningDensityRubric(),  # rubric_4 — content quality
+            TaskSplitRubric(),         # rubric_5 — task split quality
         ]
-        # Weights must sum to exactly 1.0 (enforced by OpenEnv WeightedSum)
-        # These are nominal — actual scoring logic lives in forward() below
-        weights = [0.15, 0.05, 0.35, 0.35, 0.10]
+        # Nominal weights (must sum to 1.0). Actual logic is in forward().
+        weights = [0.15, 0.05, 0.25, 0.25, 0.15, 0.15]
         super().__init__(rubrics, weights)
 
     def forward(self, action: Action, observation: Observation) -> float:
-        # --- Gate: Any repetition = hard penalty ---
-        anti_rep_score = self.rubric_0(action, observation)
-        if anti_rep_score < 0.5:
-            # Repetitive output. Return near-zero to strongly discourage.
-            return 0.05
+        active_block = (
+            observation.metadata.get("active_block", "default")
+            if hasattr(observation, 'metadata') else "default"
+        )
 
         brevity = self.rubric_1(action, observation)
         density = self.rubric_4(action, observation)
-        
-        # Quality multiplier: brevity and density act as multipliers, not additive terms
-        # This prevents "long but correct" from being exploited
-        quality_multiplier = 0.5 + 0.25 * brevity + 0.25 * density
-
-        active_block = observation.metadata.get("active_block", "default") if hasattr(observation, 'metadata') else "default"
+        # Quality multiplier: [0.5, 1.0] — scales outcome score
+        quality = 0.5 + 0.25 * brevity + 0.25 * density
 
         if active_block == "code_gen":
-            # Pure outcome: did the code pass tests?
+            # Gate: anti-repetition not applied to code (would false-positive)
             execution_score = self.rubric_2(action, observation)
-            return execution_score * quality_multiplier
+            return execution_score * quality
 
         elif active_block == "reasoning":
-            # Pure outcome: is the final answer correct?
-            correctness_score = self.rubric_3(action, observation)
-            return correctness_score * quality_multiplier
+            # Gate: anti-repetition applied to text responses only
+            anti_rep = self.rubric_0(action, observation)
+            if anti_rep < 0.5:
+                return 0.05  # Hard penalize looping/padding
+            correctness = self.rubric_3(action, observation)
+            return correctness * quality
 
-        else:
-            # task_split / default: use quality signals only
-            return quality_multiplier
+        elif active_block == "task_split":
+            # Gate: anti-repetition applied
+            anti_rep = self.rubric_0(action, observation)
+            if anti_rep < 0.5:
+                return 0.05
+            # Real outcome scoring — no free floor reward
+            split_score = self.rubric_5(action, observation)
+            return split_score * quality
+
+        # Unknown block — return quality signals only (no free reward)
+        return quality * 0.0  # Zero until explicitly handled
