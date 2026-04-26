@@ -25,6 +25,15 @@ app = FastAPI(title="Multi-Block-Env (OpenEnv Standard)")
 
 server.register_routes(app)
 
+@app.get("/")
+async def root():
+    return {
+        "message": "Welcome to the Multi-Block-Env Server (OpenEnv v0.1.13+)",
+        "docs": "/docs",
+        "health": "/health",
+        "status": "online"
+    }
+
 @app.get("/health")
 async def health():
     return {"status": "healthy", "capacity": server.get_capacity_status()}
