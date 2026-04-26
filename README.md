@@ -10,7 +10,7 @@
 
 **Multi-Block-Env** is an adversarial, long-horizon Reinforcement Learning training environment built on top of Meta's OpenEnv framework.
 
-## 🚨 Motivating the Problem
+## Motivating the Problem
 
 When we train smaller, efficient language models (like Llama 3.2 3B) using traditional reinforcement learning environments, we treat them like single-function machines. We put them in a coding environment to learn code, or a math environment to learn math. But real problem-solving doesn't work that way. 
 
@@ -18,7 +18,7 @@ Because small models have limited capacity, they often look for lazy shortcuts t
 
 To maximize cognitive throughput, we need an environment that forces the model to actually *think* step-by-step across different domains, while making fake reasoning impossible.
 
-## 🧠 The Architecture & How it Works
+## The Architecture & How it Works
 
 Unlike traditional monolithic RL environments that specialize in single tasks, Multi-Block-Env orchestrates a dynamic trajectory across three distinct cognitive domains in a single episode.
 
@@ -31,7 +31,7 @@ Unlike traditional monolithic RL environments that specialize in single tasks, M
   2. `CodeGenBlock` — Tests syntax, logic, and isolated sandboxed execution.
   3. `ReasoningBlock` — Tests multi-step chain-of-thought logic.
 
-## 🛡️ Anti-Reward Hacking
+## Anti-Reward Hacking
 
 The core philosophy of this environment is: **if your grading system can be gamed, it will be gamed.** We implemented aggressive rubric structures to prevent RL failure modes:
 * **The Loop Exploit (Prevented)**: Hard-zeros for non-sequential or runaway reasoning steps.
@@ -39,7 +39,7 @@ The core philosophy of this environment is: **if your grading system can be game
 * **The Synonym Filler Exploit (Prevented)**: Mandated math/domain-token presence in reasoning steps.
 * **The Sandbagging Exploit (Prevented)**: Max-scoring applied to iterative revisions instead of additive bonuses.
 
-## 📊 Results
+## Results
 
 We trained Llama 3.2 3B in our environment. The learning curves show exactly how the model discovered cheats, and how our environment forced it to correct its behavior and genuinely learn.
 
@@ -51,7 +51,7 @@ We trained Llama 3.2 3B in our environment. The learning curves show exactly how
 1. **The Plateau & Correction:** The reward initially shoots up (finding the loop exploit), then flatlines. When we patched the exploit, the curve dipped, but then the model learned to genuinely solve the problems, pushing the reward ceiling higher.
 2. **Behavioral Shift:** By the end of training, the looping behavior disappeared completely. The model naturally converged to writing 3-5 tight reasoning steps ending in a correct answer—driven entirely by the environment's strict reward signal.
 
-## 🚀 Installation & Usage
+## Installation & Usage
 
 Ensure you have Python 3.10+ installed.
 
