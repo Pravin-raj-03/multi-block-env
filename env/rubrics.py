@@ -293,8 +293,9 @@ class MultiBlockRubric(WeightedSum):
             CorrectnessRubric(),       # rubric_3 — reasoning outcomes
             ReasoningDensityRubric(),  # rubric_4 — content quality
         ]
-        # Weights don't matter much since we use custom forward()
-        weights = [0.2, 0.05, 0.4, 0.4, 0.1]
+        # Weights must sum to exactly 1.0 (enforced by OpenEnv WeightedSum)
+        # These are nominal — actual scoring logic lives in forward() below
+        weights = [0.15, 0.05, 0.35, 0.35, 0.10]
         super().__init__(rubrics, weights)
 
     def forward(self, action: Action, observation: Observation) -> float:
