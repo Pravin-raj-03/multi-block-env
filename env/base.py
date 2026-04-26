@@ -14,7 +14,30 @@ from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import Action as BaseAction
 from openenv.core.env_server.types import Observation as BaseObservation
 from openenv.core.env_server.types import State as BaseState
-from pydantic import Field
+from enum import StrEnum
+from pydantic import Field, BaseModel
+
+
+# ---------------------------------------------------------------------------
+# Core Enums and Types
+# ---------------------------------------------------------------------------
+
+class Difficulty(StrEnum):
+    EASY = "easy"
+    MEDIUM = "medium"
+    HARD = "hard"
+
+
+class HistoryEntry(BaseModel):
+    role: str
+    content: str
+
+
+class StateBuffer(BaseModel):
+    entries: list[HistoryEntry] = []
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +65,13 @@ class Observation(BaseObservation):
     step: int = 0
     difficulty: str = "easy"
     reward_feedback: dict[str, float] = Field(default_factory=dict)
+
+
+class StepResult(BaseModel):
+    observation: Observation
+    reward: float
+    done: bool
+    info: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
