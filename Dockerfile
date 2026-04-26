@@ -1,7 +1,13 @@
 FROM python:3.12-slim
 
+# Install system dependencies
+USER root
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user (Hugging Face Spaces requirement)
 RUN useradd -m -u 1000 user
+
+# Set back to the non-root user
 USER user
 ENV PATH="/home/user/.local/bin:$PATH"
 
