@@ -8,11 +8,19 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Multi-Block-Env** is an adversarial, long-horizon Reinforcement Learning training environment built on top of Meta's OpenEnv framework. It is specifically designed to maximize the cognitive throughput of lightweight models (like Llama 3.2 3B) by forcing them to learn *how to think* across dynamic, multi-step problem spaces, rather than simply memorizing the *shape* of correct answers.
+**Multi-Block-Env** is an adversarial, long-horizon Reinforcement Learning training environment built on top of Meta's OpenEnv framework.
 
-## 🧠 The Architecture
+## 🚨 Motivating the Problem
 
-Unlike traditional monolithic RL environments that specialize in single tasks (e.g., only math or only code), Multi-Block-Env orchestrates a dynamic trajectory across three distinct cognitive domains in a single episode.
+When we train smaller, efficient language models (like Llama 3.2 3B) using traditional reinforcement learning environments, we treat them like single-function machines. We put them in a coding environment to learn code, or a math environment to learn math. But real problem-solving doesn't work that way. 
+
+Because small models have limited capacity, they often look for lazy shortcuts to maximize reward. Instead of actually thinking, they memorize the *shape* of a correct answer—for example, generating "Step 1: Step 2: Step 3..." in an infinite loop without actually doing any math. If the environment isn't strictly designed to verify the *actual outcome*, the AI gets rewarded for this cheating.
+
+To maximize cognitive throughput, we need an environment that forces the model to actually *think* step-by-step across different domains, while making fake reasoning impossible.
+
+## 🧠 The Architecture & How it Works
+
+Unlike traditional monolithic RL environments that specialize in single tasks, Multi-Block-Env orchestrates a dynamic trajectory across three distinct cognitive domains in a single episode.
 
 <p align="center"><img src="./Long-horizon%20(1).png" alt="Architecture Diagram" style="max-width: 800px; width: 100%; border-radius: 8px; margin: 20px 0;"></p>
 
@@ -25,14 +33,25 @@ Unlike traditional monolithic RL environments that specialize in single tasks (e
 
 ## 🛡️ Anti-Reward Hacking
 
-The core philosophy of this environment is: **if your reward function can be gamed, it will be gamed.** 
-We have implemented highly aggressive rubric structures to prevent RL failure modes:
+The core philosophy of this environment is: **if your grading system can be gamed, it will be gamed.** We implemented aggressive rubric structures to prevent RL failure modes:
 * **The Loop Exploit (Prevented)**: Hard-zeros for non-sequential or runaway reasoning steps.
 * **The Hedging Exploit (Prevented)**: Strict regex parsing for isolated `Final Answer: X` declarations.
-* **The Synonym Filler Exploit (Prevented)**: Mandated domain-token density in mathematical reasoning.
-* **The Sandbagging Exploit (Prevented)**: Max-scoring applied to iterative revisions instead of additive deltas.
+* **The Synonym Filler Exploit (Prevented)**: Mandated math/domain-token presence in reasoning steps.
+* **The Sandbagging Exploit (Prevented)**: Max-scoring applied to iterative revisions instead of additive bonuses.
 
-## 🚀 Installation
+## 📊 Results
+
+We trained Llama 3.2 3B in our environment. The learning curves show exactly how the model discovered cheats, and how our environment forced it to correct its behavior and genuinely learn.
+
+<p align="center">
+  <img src="./sft.jpeg" alt="SFT Learning Curve" width="45%" style="border-radius: 8px; border: 1px solid #333; margin-right: 2%;">
+  <img src="./rl.jpeg" alt="RL Reward Curve" width="45%" style="border-radius: 8px; border: 1px solid #333;">
+</p>
+
+1. **The Plateau & Correction:** The reward initially shoots up (finding the loop exploit), then flatlines. When we patched the exploit, the curve dipped, but then the model learned to genuinely solve the problems, pushing the reward ceiling higher.
+2. **Behavioral Shift:** By the end of training, the looping behavior disappeared completely. The model naturally converged to writing 3-5 tight reasoning steps ending in a correct answer—driven entirely by the environment's strict reward signal.
+
+## 🚀 Installation & Usage
 
 Ensure you have Python 3.10+ installed.
 
@@ -42,24 +61,20 @@ cd multi-block-env
 pip install -e .
 ```
 
-## 💻 Usage
-
-### 1. Start the Environment Server
-The environment runs as a FastAPI server powered by OpenEnv.
-
+Start the FastAPI environment server:
 ```bash
 python server.py
 ```
-*The server will start on `http://127.0.0.1:7860`.*
 
-### 2. Run the PPO Trainer
-Once the environment is running, you can launch the reinforcement learning loop.
-
+Run the PPO Trainer:
 ```bash
 python trainer/train_ppo.py
 ```
 
-## 🏆 Hackathon Submission
+## 🔗 Resources & Hackathon Submission
 
 This project was built by **Team Evangelion** for the Meta-PyTorch Hackathon 2026. 
-* [Hugging Face Space Deployment](https://huggingface.co/spaces/Pravin-raj/multi-block)
+
+- 🖥️ **Live Environment:** [Hugging Face Space Deployment](https://huggingface.co/spaces/Pravin-raj/multi-block)
+- 📓 **Training Notebook:** [Google Colab RL Training Notebook](https://colab.research.google.com/drive/1I6FiK583GdnbpYCrYlVLrF_EcwWz6fwV?usp=sharing)
+- 📝 **Full Project Blog:** [Read the full story in `blog.md`](./blog.md)
