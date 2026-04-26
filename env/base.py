@@ -7,7 +7,7 @@ Conforms to OpenEnv 0.1.13+ interfaces.
 from __future__ import annotations
 
 import random
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from openenv.core.env_server.interfaces import Environment
