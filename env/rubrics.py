@@ -203,7 +203,13 @@ class CorrectnessRubric(Rubric):
 # ---------------------------------------------------------------------------
 
 class ReasoningDensityRubric(Rubric):
-    """Ensures step bodies have actual content, not filler phrases."""
+    """Ensures step bodies have actual content, not filler phrases.
+    
+    Two checks:
+    1. Filler phrase blocklist (think, analyze, consider...)
+    2. Domain token presence — at least one step must contain math/logic tokens
+       or words from the task description (prevents synonym-varied filler).
+    """
     FILLER_PATTERNS = [
         r'^think\s*(about|through|carefully)?$',
         r'^analyze\s*(the\s*problem)?$',
@@ -212,7 +218,15 @@ class ReasoningDensityRubric(Rubric):
         r'^\.\.\.$',
         r'^n/?a$',
         r'^step\s*\d+$',
+        r'^(calculate|compute|solve|find|determine)\s*[.]?$',  # one-word "action" steps
     ]
+    # Math/logic operators that indicate actual computation is happening
+    DOMAIN_TOKENS = re.compile(
+        r'\d+|\+|\-|\*|\/|=|%|x\s*=|per\s|rate|total|cost|sum|product|quotient|'
+        r'ratio|percent|probability|formula|equation|therefore|thus|hence|so\s+the|'
+        r'calculate|equals|gives|result|answer is',
+        re.IGNORECASE
+    )
 
     def forward(self, action: Action, observation: Observation) -> float:
         # Not applicable to code blocks
@@ -223,6 +237,7 @@ class ReasoningDensityRubric(Rubric):
         if not step_bodies:
             return 1.0
 
+        # Check 1: Filler phrase count
         filler_count = 0
         for body in step_bodies:
             first_line = body.split('\n')[0].strip().lower()
@@ -235,7 +250,15 @@ class ReasoningDensityRubric(Rubric):
                     break
 
         filler_ratio = filler_count / len(step_bodies)
-        return max(0.0, 1.0 - filler_ratio) if filler_ratio > 0.3 else 1.0
+        filler_score = max(0.0, 1.0 - filler_ratio) if filler_ratio > 0.3 else 1.0
+
+        # Check 2: Domain token presence across ALL steps combined
+        # At least one step must show actual computation, not just rephrasing
+        all_step_text = ' '.join(step_bodies)
+        has_domain_tokens = bool(self.DOMAIN_TOKENS.search(all_step_text))
+        domain_score = 1.0 if has_domain_tokens else 0.3  # penalize but don't zero
+
+        return filler_score * domain_score
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +343,21 @@ class MultiBlockRubric(WeightedSum):
         # Quality multiplier: [0.5, 1.0] — scales outcome score
         quality = 0.5 + 0.25 * brevity + 0.25 * density
 
+        # Difficulty multiplier: harder correct answers score higher
+        # easy=1.0, medium=1.1, hard=1.2 — capped at 1.0 after multiplication
+        difficulty = (
+            observation.metadata.get("active_block", "default") and
+            observation.metadata.get("working_memory", {}).get("difficulty", "easy")
+            if hasattr(observation, 'metadata') else "easy"
+        ) or "easy"
+        difficulty_mult = {"easy": 1.0, "medium": 1.1, "hard": 1.2}.get(
+            str(difficulty).lower(), 1.0
+        )
+
         if active_block == "code_gen":
             # Gate: anti-repetition not applied to code (would false-positive)
             execution_score = self.rubric_2(action, observation)
-            return execution_score * quality
+            return min(1.0, execution_score * quality * difficulty_mult)
 
         elif active_block == "reasoning":
             # Gate: anti-repetition applied to text responses only
@@ -331,7 +365,7 @@ class MultiBlockRubric(WeightedSum):
             if anti_rep < 0.5:
                 return 0.05  # Hard penalize looping/padding
             correctness = self.rubric_3(action, observation)
-            return correctness * quality
+            return min(1.0, correctness * quality * difficulty_mult)
 
         elif active_block == "task_split":
             # Gate: anti-repetition applied
@@ -340,7 +374,7 @@ class MultiBlockRubric(WeightedSum):
                 return 0.05
             # Real outcome scoring — no free floor reward
             split_score = self.rubric_5(action, observation)
-            return split_score * quality
+            return min(1.0, split_score * quality * difficulty_mult)
 
-        # Unknown block — return quality signals only (no free reward)
-        return quality * 0.0  # Zero until explicitly handled
+        # Unknown block — zero reward
+        return 0.0

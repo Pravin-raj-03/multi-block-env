@@ -101,6 +101,10 @@ class CodeSandbox:
 
     # -- Layer 1: AST static analysis ----------------------------------------
 
+    # Attribute names used in class-traversal attacks
+    _FORBIDDEN_ATTRS = {"__class__", "__mro__", "__subclasses__", "__bases__",
+                        "__globals__", "__builtins__", "__code__", "__func__"}
+
     def _ast_check(self, code: str) -> tuple[bool, str]:
         try:
             tree = ast.parse(code)
@@ -114,9 +118,12 @@ class CodeSandbox:
             # Block global / nonlocal
             if isinstance(node, (ast.Global, ast.Nonlocal)):
                 return False, "global/nonlocal statements are not allowed"
-            # Block forbidden names
+            # Block forbidden Name nodes (exec, eval, open, ...)
             if isinstance(node, ast.Name) and node.id in _FORBIDDEN_NAMES:
                 return False, f"Forbidden name: {node.id}"
+            # Block class-traversal attribute access (__class__, __mro__, etc.)
+            if isinstance(node, ast.Attribute) and node.attr in self._FORBIDDEN_ATTRS:
+                return False, f"Forbidden attribute access: {node.attr}"
             # Block memory bombs: [x] * N where N > 1_000_000
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
                 for operand in (node.left, node.right):
@@ -296,13 +303,17 @@ class SplitQualityScorer:
         return c
 
     def _completeness(self, tasks: list[str], reference: list[str]) -> float:
+        """Jaccard-based completeness: rewards precision AND recall, not just recall.
+        Prevents keyword-dump tasks from scoring high."""
         if not reference:
             return 1.0
         scores = []
         for ref_task in reference:
             ref_words = set(ref_task.lower().split())
+            # Jaccard: intersection / union — penalizes tasks that are too long/too short
             best = max(
-                len(ref_words & set(t.lower().split())) / max(len(ref_words), 1)
+                len(ref_words & set(t.lower().split())) /
+                max(len(ref_words | set(t.lower().split())), 1)
                 for t in tasks
             )
             scores.append(best)

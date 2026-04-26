@@ -262,12 +262,14 @@ class TaskSplittingBlock(EnvBlock):
             metadata["step1_score"] = score
             metadata["step1_components"] = comp_dict
             done = False  # allow step 2 revision
+
         else:
-            # Revision bonus: max(0, step2 - step1 - 0.05)
+            # Take the BEST of step 1 and step 2 — no bonus for sandbagging step 1.
+            # This removes the exploit where the model deliberately gives a bad step 1
+            # to maximize the revision delta bonus.
             step1 = metadata.get("step1_score", 0.0)
-            bonus = max(0.0, score - step1 - 0.05)
-            comp_dict["revision_bonus"] = round(bonus, 4)
-            score = min(1.0, score + bonus)
+            score = max(step1, score)
+            comp_dict["step1_score"] = round(step1, 4)
             done = True
 
         return comp_dict, done
