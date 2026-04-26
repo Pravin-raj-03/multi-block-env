@@ -71,10 +71,10 @@ Run the PPO Trainer:
 python trainer/train_ppo.py
 ```
 
-## 🔗 Resources & Hackathon Submission
+## Resources & Hackathon Submission
 
 This project was built by **Team Evangelion** for the Meta-PyTorch Hackathon 2026. 
 
-- 🖥️ **Live Environment:** [Hugging Face Space Deployment](https://huggingface.co/spaces/Pravin-raj/multi-block)
-- 📓 **Training Notebook:** [Google Colab RL Training Notebook](https://colab.research.google.com/drive/1I6FiK583GdnbpYCrYlVLrF_EcwWz6fwV?usp=sharing)
-- 📝 **Full Project Blog:** [Read the full story in `blog.md`](./blog.md)
+- **Live Environment:** [Hugging Face Space Deployment](https://huggingface.co/spaces/Pravin-raj/multi-block)
+- **Training Notebook:** [Google Colab RL Training Notebook](https://colab.research.google.com/drive/1I6FiK583GdnbpYCrYlVLrF_EcwWz6fwV?usp=sharing)
+- **Full Project Blog:** [Read the full story in `blog.md`](./blog.md)
