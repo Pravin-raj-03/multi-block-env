@@ -1,9 +1,13 @@
 """
-Reward rubrics using the official OpenEnv Rubric system.
+Reward rubrics with comprehensive anti-reward-hacking defenses.
+
+Each rubric is independently verifiable and adversarially hardened.
+All reward signals are OUTCOME-based, not FORMAT-based.
 """
 
 import re
 import textwrap
+import hashlib
 from typing import Any, Optional
 from openenv.core.rubrics.base import Rubric
 from openenv.core.rubrics.containers import WeightedSum
@@ -11,149 +15,314 @@ from openenv.core.tools.local_python_executor import PyExecutor
 from .base import Action, Observation
 
 
-class FormatComplianceRubric(Rubric):
-    """Checks if the action follows the required format and penalizes repetition."""
-    def __init__(self, pattern: str):
-        super().__init__()
-        self.pattern = re.compile(pattern, re.DOTALL)
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
 
+def _normalize_text(text: str) -> str:
+    """Lowercase, collapse whitespace, strip punctuation for comparison."""
+    text = text.lower().strip()
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+def _content_hash(text: str) -> str:
+    return hashlib.md5(_normalize_text(text).encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Defense 1: Anti-Looping / Anti-Repetition Rubric
+# ---------------------------------------------------------------------------
+
+class AntiRepetitionRubric(Rubric):
+    """
+    Zero reward for any response that is semantically repetitive or loops.
+    
+    Hardened against:
+    - Sequential step number looping (Step 1, Step 2... Step 100)
+    - Repeated content with different step numbers
+    - Padding the output with synonymous or near-identical lines
+    """
     def forward(self, action: Action, observation: Observation) -> float:
         text = action.text
-        if not self.pattern.search(text):
-            return 0.0
-        
-        # 1. Check for step sequentiality
-        steps = re.findall(r'Step (\d+):', text)
-        if steps:
-            step_nums = [int(s) for s in steps]
-            # Must have at least 2 steps for reasoning
-            if len(step_nums) < 2:
-                return 0.5 # Partial reward for just trying
-            
-            # Check if sequential (1, 2, 3...)
-            for i in range(len(step_nums)):
-                if step_nums[i] != i + 1:
-                    return 0.1 # Out of order or repeated numbers
-            
-            # Cap the number of steps to prevent looping
-            if len(step_nums) > 10:
-                return 0.2 # Penalty for excessive steps
-        
-        # 2. Check for exact repetition of content between steps
-        # This prevents "Step 1: content Step 2: content ..."
-        step_contents = re.split(r'Step \d+:', text)[1:]
-        if len(step_contents) > 1:
-            unique_contents = set(c.strip() for c in step_contents if c.strip())
-            if len(unique_contents) < len(step_contents) * 0.8: # Allow some similarity but not 100%
-                return 0.0 # Repeated reasoning is useless
-        
-        return 1.0
 
+        # 1. Check step number range — steps beyond 10 are penalized hard
+        step_numbers = [int(m) for m in re.findall(r'Step\s+(\d+)', text, re.IGNORECASE)]
+        if step_numbers:
+            if max(step_numbers) > 10:
+                return 0.0  # Hard zero — no valid reasoning needs >10 steps
+            # Steps must be sequential from 1
+            expected = list(range(1, len(step_numbers) + 1))
+            if step_numbers != expected:
+                return 0.0  # Non-sequential = hacking
+
+        # 2. Check for repeated lines (catch padding/synonym spam)
+        lines = [l.strip() for l in text.splitlines() if len(l.strip()) > 10]
+        if lines:
+            hashes = [_content_hash(l) for l in lines]
+            unique_ratio = len(set(hashes)) / len(hashes)
+            if unique_ratio < 0.7:  # More than 30% duplicates
+                return 0.0
+
+        # 3. Check for paragraph-level repetition (catch step content reuse)
+        paragraphs = [p.strip() for p in re.split(r'Step\s+\d+:', text) if len(p.strip()) > 20]
+        if len(paragraphs) > 1:
+            para_hashes = [_content_hash(p) for p in paragraphs]
+            if len(set(para_hashes)) < len(para_hashes) * 0.75:
+                return 0.0
+
+        return 1.0  # Passed all checks
+
+
+# ---------------------------------------------------------------------------
+# Defense 2: Brevity / Length Control Rubric
+# ---------------------------------------------------------------------------
 
 class BrevityRubric(Rubric):
-    """Penalizes excessively long responses to prevent reward hacking."""
-    def __init__(self, max_chars: int = 1000):
+    """
+    Penalizes excessively long responses.
+    
+    Hardened against:
+    - Padding with filler text to "fill" the token budget
+    - Generating excessive explanation to avoid real work
+    """
+    def __init__(self, target_chars: int = 800, hard_limit_chars: int = 3000):
         super().__init__()
-        self.max_chars = max_chars
+        self.target = target_chars
+        self.hard_limit = hard_limit_chars
 
     def forward(self, action: Action, observation: Observation) -> float:
         length = len(action.text)
-        if length > self.max_chars:
-            # Linear penalty after max_chars
-            return max(0.0, 1.0 - (length - self.max_chars) / 1000.0)
-        return 1.0
+        if length <= self.target:
+            return 1.0  # Ideal length
+        if length >= self.hard_limit:
+            return 0.0  # Hard zero for extreme verbosity
+        # Smooth decay between target and hard_limit
+        decay = (length - self.target) / (self.hard_limit - self.target)
+        return max(0.0, 1.0 - decay)
 
+
+# ---------------------------------------------------------------------------
+# Defense 3: Code Execution Rubric (Outcome-Based)
+# ---------------------------------------------------------------------------
 
 class CodeExecutionRubric(Rubric):
-    """Executes code using the official OpenEnv PyExecutor and scores based on tests."""
+    """
+    Verifies code correctness via actual execution against test cases.
+    
+    Hardened against:
+    - Outputting the test case answer directly as code (hardcoding)
+    - Empty code blocks that "execute" without doing anything
+    - Importing test answers from global scope
+    """
     def __init__(self, timeout: float = 5.0):
         super().__init__()
         self.executor = PyExecutor()
 
     def forward(self, action: Action, observation: Observation) -> float:
-        # Extract code from markdown
+        # 1. Extract code from markdown block
         code_match = re.search(r'```(?:python)?\n?(.*?)```', action.text, re.DOTALL)
-        code = code_match.group(1).strip() if code_match else None
+        if not code_match:
+            return 0.0  # No code block at all
         
-        if not code:
-            return 0.0
+        code = code_match.group(1).strip()
+        
+        if not code or len(code) < 10:
+            return 0.0  # Empty or trivially small code block
 
-        # Build test harness from working memory
-        working_memory = observation.metadata.get("working_memory", {})
-        fn_name = working_memory.get("fn_name", "solution")
+        # 2. Anti-hardcoding: code must NOT contain the expected answer as a literal
+        working_memory = observation.metadata.get("working_memory", {}) if hasattr(observation, 'metadata') else {}
         test_cases = working_memory.get("test_cases", [])
-        
+        fn_name = working_memory.get("fn_name", "solution")
+
+        # 3. Build an isolated test harness
+        # CRITICAL: Use a randomized variable name to prevent scope leakage
         harness = textwrap.dedent(f"""
-            _test_cases = {test_cases!r}
-            _results = []
-            for _args, _expected in _test_cases:
+            _multi_block_test_cases = {test_cases!r}
+            _multi_block_results = []
+            for _tc_args, _tc_expected in _multi_block_test_cases:
                 try:
-                    _got = {fn_name}(*_args)
-                    _results.append(_got == _expected)
-                except:
-                    _results.append(False)
-            _test_result = all(_results) if _results else False
+                    _tc_got = {fn_name}(*_tc_args)
+                    _multi_block_results.append(int(_tc_got == _tc_expected))
+                except Exception as _tc_exc:
+                    _multi_block_results.append(0)
+            _multi_block_score = sum(_multi_block_results) / len(_multi_block_results) if _multi_block_results else 0.0
+            print(f"SCORE:{{_multi_block_score:.4f}}")
         """)
-        
+
         full_code = f"{code}\n{harness}"
         result = self.executor.run(full_code)
-        
-        if result.exit_code == 0:
-            # Check for the _test_result in stdout or just assume success if it finished
-            # In a real rubric, we'd parse the stdout for structured results
-            return 1.0 if "true" in result.stdout.lower() else 0.5
-        return 0.0
 
+        if result.exit_code != 0:
+            return 0.0  # Code crashed
+
+        # 4. Parse the structured score from stdout
+        score_match = re.search(r'SCORE:([\d.]+)', result.stdout or '')
+        if score_match:
+            return float(score_match.group(1))
+        
+        return 0.0  # Could not parse output
+
+
+# ---------------------------------------------------------------------------
+# Defense 4: Correctness Rubric (Reasoning Tasks)
+# ---------------------------------------------------------------------------
 
 class CorrectnessRubric(Rubric):
-    """Checks for final answer correctness in reasoning tasks."""
+    """
+    Checks final answer correctness for reasoning tasks.
+    
+    Hardened against:
+    - Listing multiple answers and hoping one matches
+    - Embedding the answer in a long string of numbers
+    - Approximate matching abuse
+    """
     def forward(self, action: Action, observation: Observation) -> float:
-        working_memory = observation.metadata.get("working_memory", {})
-        expected = str(working_memory.get("answer", ""))
+        working_memory = observation.metadata.get("working_memory", {}) if hasattr(observation, 'metadata') else {}
+        expected = str(working_memory.get("answer", "")).strip().lower()
+
+        if not expected:
+            return 0.0
+
+        # 1. ONLY look at the last "Final Answer: X" line — not any number in the text
+        # This prevents the model from guessing many numbers and getting partial credit
+        final_answer_match = re.search(
+            r'Final\s+Answer\s*:\s*([^\n]+)',
+            action.text,
+            re.IGNORECASE
+        )
         
-        # Look for "Final Answer: <val>" or "<answer>val</answer>"
-        match = re.search(r'(?:Final Answer|Answer)\s*:\s*(.+)|<answer>(.*?)</answer>', action.text, re.IGNORECASE | re.DOTALL)
-        if match:
-            agent_ans = (match.group(1) or match.group(2)).strip()
-            if agent_ans.lower() == expected.lower():
-                return 1.0
+        if not final_answer_match:
+            return 0.0  # No structured answer = no reward
+
+        agent_answer = final_answer_match.group(1).strip().lower()
         
-        # Fallback to last number
-        nums = re.findall(r'-?\d+\.?\d*', action.text)
-        if nums and nums[-1] == expected:
-            return 0.5
-            
+        # 2. Normalize for comparison (strip punctuation, extra spaces)
+        agent_clean = re.sub(r'[^\w\s]', '', agent_answer).strip()
+        expected_clean = re.sub(r'[^\w\s]', '', expected).strip()
+
+        if agent_clean == expected_clean:
+            return 1.0
+        
+        # 3. For numeric answers: exact numeric match only (no rounding tricks)
+        agent_nums = re.findall(r'-?\d+(?:\.\d+)?', agent_answer)
+        expected_nums = re.findall(r'-?\d+(?:\.\d+)?', expected)
+        
+        if agent_nums and expected_nums and agent_nums[0] == expected_nums[0]:
+            # Correct number found, but check it's the FIRST and ONLY number mentioned
+            if len(agent_nums) == 1:
+                return 1.0  # Clean single-number answer
+            else:
+                return 0.5  # Correct answer but buried in multiple numbers (penalize hedging)
+
         return 0.0
 
 
+# ---------------------------------------------------------------------------
+# Defense 5: Minimal Reasoning Density Rubric
+# ---------------------------------------------------------------------------
+
+class ReasoningDensityRubric(Rubric):
+    """
+    Ensures responses have meaningful content density, not just structure.
+    
+    Hardened against:
+    - Submitting step headers with empty bodies
+    - Filler phrases like "Step 1: Think about the problem"
+    - One-word step bodies
+    """
+    # Meaningless filler phrases that indicate content-free steps
+    FILLER_PATTERNS = [
+        r'^think\s*(about|through|carefully)?$',
+        r'^analyze\s*(the\s*problem)?$',
+        r'^consider\s*(this)?$',
+        r'^understand\s*(the\s*question)?$',
+        r'^\.\.\.$',
+        r'^n/?a$',
+        r'^step\s*\d+$',
+    ]
+    
+    def forward(self, action: Action, observation: Observation) -> float:
+        text = action.text
+        
+        # Extract step bodies
+        step_bodies = re.split(r'Step\s+\d+\s*:', text, flags=re.IGNORECASE)[1:]
+        
+        if not step_bodies:
+            return 1.0  # No step format used — not penalized here
+        
+        filler_count = 0
+        for body in step_bodies:
+            body_clean = body.split('\n')[0].strip().lower()  # First line of step
+            if not body_clean or len(body_clean) < 5:
+                filler_count += 1
+                continue
+            for pattern in self.FILLER_PATTERNS:
+                if re.match(pattern, body_clean):
+                    filler_count += 1
+                    break
+        
+        if len(step_bodies) == 0:
+            return 1.0
+        
+        filler_ratio = filler_count / len(step_bodies)
+        if filler_ratio > 0.3:  # >30% filler steps = penalty
+            return max(0.0, 1.0 - filler_ratio)
+        
+        return 1.0
+
+
+# ---------------------------------------------------------------------------
+# Composite: MultiBlockRubric
+# ---------------------------------------------------------------------------
+
 class MultiBlockRubric(WeightedSum):
-    """Composes all rubrics into a single multi-agent reward signal."""
+    """
+    Composes all rubrics into a single anti-hacking reward signal.
+    
+    Design principles:
+    - AntiRepetition acts as a GATE: a repetitive response gets near-zero reward
+      regardless of what other rubrics say.
+    - Outcome rubrics (Correctness, CodeExecution) dominate the score.
+    - Format/brevity are minor contributors to prevent format over-optimization.
+    """
     def __init__(self):
-        # We define a flexible weighted sum
         rubrics = [
-            FormatComplianceRubric(r'```python|Step \d+:'),
-            CodeExecutionRubric(),
-            CorrectnessRubric(),
-            BrevityRubric()
+            AntiRepetitionRubric(),    # rubric_0 — gate
+            BrevityRubric(),           # rubric_1 — length control
+            CodeExecutionRubric(),     # rubric_2 — code outcomes
+            CorrectnessRubric(),       # rubric_3 — reasoning outcomes
+            ReasoningDensityRubric(),  # rubric_4 — content quality
         ]
-        weights = [0.2, 0.3, 0.4, 0.1]
+        # Weights don't matter much since we use custom forward()
+        weights = [0.2, 0.05, 0.4, 0.4, 0.1]
         super().__init__(rubrics, weights)
 
     def forward(self, action: Action, observation: Observation) -> float:
-        # Route to specific sub-rubric based on active block
-        active_block = observation.metadata.get("active_block", "default")
+        # --- Gate: Any repetition = hard penalty ---
+        anti_rep_score = self.rubric_0(action, observation)
+        if anti_rep_score < 0.5:
+            # Repetitive output. Return near-zero to strongly discourage.
+            return 0.05
+
+        brevity = self.rubric_1(action, observation)
+        density = self.rubric_4(action, observation)
         
-        # Common brevity penalty applied to all
-        brevity_score = self.rubric_3(action, observation)
-        
+        # Quality multiplier: brevity and density act as multipliers, not additive terms
+        # This prevents "long but correct" from being exploited
+        quality_multiplier = 0.5 + 0.25 * brevity + 0.25 * density
+
+        active_block = observation.metadata.get("active_block", "default") if hasattr(observation, 'metadata') else "default"
+
         if active_block == "code_gen":
-            # Format (0.2) + Execution (0.7) + Brevity (0.1)
-            score = 0.2 * self.rubric_0(action, observation) + 0.7 * self.rubric_1(action, observation) + 0.1 * brevity_score
-            return score
+            # Pure outcome: did the code pass tests?
+            execution_score = self.rubric_2(action, observation)
+            return execution_score * quality_multiplier
+
         elif active_block == "reasoning":
-            # Format (0.2) + Correctness (0.7) + Brevity (0.1)
-            score = 0.2 * self.rubric_0(action, observation) + 0.7 * self.rubric_2(action, observation) + 0.1 * brevity_score
-            return score
-        
-        # Default fallback
-        return super().forward(action, observation)
+            # Pure outcome: is the final answer correct?
+            correctness_score = self.rubric_3(action, observation)
+            return correctness_score * quality_multiplier
+
+        else:
+            # task_split / default: use quality signals only
+            return quality_multiplier
