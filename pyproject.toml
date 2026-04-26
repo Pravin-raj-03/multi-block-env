@@ -13,7 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.10.0",
     "httpx>=0.27.0",
-    "openenv>=0.1.13",
+    "openenv @ git+https://github.com/meta-pytorch/OpenEnv.git",
 ]
 
 [project.optional-dependencies]
