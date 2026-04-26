@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from openenv.core.env_server.interfaces import Environment
 from .base import Action, Observation, State, EnvBlock
-from .blocks.task_split import TaskSplitBlock
+from .blocks.task_split import TaskSplittingBlock
 from .blocks.code_gen import CodeGenBlock
 from .blocks.reasoning import ReasoningBlock
 from .rubrics import MultiBlockRubric
@@ -36,7 +36,7 @@ class LongHorizonEnv(Environment[Action, Observation, State]):
         super().__init__(rubric=MultiBlockRubric())
         
         self.blocks: dict[str, EnvBlock] = {
-            "task_split": TaskSplitBlock(),
+            "task_split": TaskSplittingBlock(),
             "code_gen": CodeGenBlock(),
             "reasoning": ReasoningBlock(),
         }
