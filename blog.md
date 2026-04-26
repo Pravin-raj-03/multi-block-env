@@ -31,7 +31,7 @@ That is what we built.
 
 ## What Multi-Block-Env Is
 
-<img src="./image.png" alt="Bringing Order to Chaos" width="250" align="right" style="margin-left: 20px; margin-bottom: 20px; border-radius: 8px;">
+<img src="./chaos.png" alt="Bringing Order to Chaos" width="250" align="right" style="margin-left: 20px; margin-bottom: 20px; border-radius: 8px;">
 
 Multi-Block-Env is our custom training environment built using Meta's OpenEnv framework. Think of it as a virtual obstacle course for AI. 
 
